@@ -35,7 +35,12 @@ from swarm.utils import *
 
 from datetime import datetime
 
-from typing import Optional, Union, List, TypedDict, Literal
+from typing import Optional, Union, List, Tuple
+
+try:
+	from typing import TypedDict, Literal
+except:
+	from typing_extensions import TypedDict, Literal
 
 class Neighbour(object):
 	"""
@@ -406,7 +411,7 @@ class Switch(object):
 			raise APIException(r.status_code, r.text)
 
 	@property
-	def progress(self) -> TimedValue[tuple[int, int]]:
+	def progress(self) -> TimedValue[Tuple[int, int]]:
 		"""
 		Returns the current progress state of the switch's poller
 		or writer as a tuple `(done, total)`.

@@ -36,7 +36,11 @@ from swarm.auth import *
 from swarm.objects import Neighbour, MACNeighbour, CDPNeighbour
 from swarm.objects import Interface, Switch, Container
 
-from typing import Optional, List, Iterator, Literal, Tuple, TypedDict
+from typing import Optional, List, Iterator, Tuple
+try:
+	from typing import TypedDict, Literal
+except:
+	from typing_extensions import TypedDict, Literal
 
 class SystemStats(TypedDict):
 	"""
