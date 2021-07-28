@@ -39,5 +39,6 @@ from swarm.utils import TimedValue
 
 from swarm.objects import Neighbour, MACNeighbour, CDPNeighbour
 from swarm.objects import Interface, Switch, Container
+from swarm.objects import Change, SwitchChange, InterfaceChange, InterfaceWriteChange, SwitchWriteChange
 
 __all__ = ['MachAuthToken', 'Client']

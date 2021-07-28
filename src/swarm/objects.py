@@ -134,6 +134,109 @@ class CDPNeighbour(Neighbour):
 		"""
 		return self.__rintf
 
+class Change(object):
+	"""
+	Represents a change made to a switch or switch interface.
+	"""
+	def __init__(self, client: Client, path: str, blob: dict):
+		self.__client = client
+		self.__stamp = blob['time']
+		self.__type = blob['type']
+		self.__changes = blob['changes']
+		self.__path = path
+
+	@property
+	def switch(self) -> Switch:
+		"""
+		The switch which had this change made to it (or recorded it).
+		"""
+		return self.__client.switch(self.__path)
+
+	@property
+	def changes(self) -> dict:
+		"""
+		The dictionary of attributes which changed.
+		"""
+		return self.__changes
+
+	@property
+	def time(self) -> datetime:
+		"""
+		Time at which the change was made or noticed.
+		"""
+		return datetime.fromtimestamp(self.__stamp)
+	@property
+	def raw_time(self) -> int:
+		"""
+		Time at which the change was made or noticed, as a raw number
+		of seconds since the UNIX epoch.
+		"""
+		return self.__stamp
+
+	@staticmethod
+	def from_blob(client: Client, path: str, blob: dict):
+		if blob['type'] == 'interface':
+			return InterfaceChange(client, path, blob)
+		elif blob['type'] == 'switch':
+			return SwitchChange(client, path, blob)
+		elif blob['type'] == 'interface_write':
+			return InterfaceWriteChange(client, path, blob)
+		elif blob['type'] == 'switch_write':
+			return SwitchWriteChange(client, path, blob)
+		else:
+			raise Exception('Unsupported change type: ' +
+			    blob['type'])
+
+class InterfaceChange(Change):
+	"""
+	A change made to a switch interface which was detected by the poller
+	(not made via swarm)
+	"""
+	def __init__(self, client, path, blob):
+		Change.__init__(self, client, path, blob)
+		self.__index = blob['index']
+
+	@property
+	def interface(self) -> Interface:
+		"""The interface affected by this change."""
+		return self.switch.interface(self.__index)
+
+
+class InterfaceWriteChange(InterfaceChange):
+	"""
+	A change made to a switch interface via swarm.
+	"""
+	def __init__(self, client, path, blob):
+		InterfaceChange.__init__(self, client, path, blob)
+		self.__user = blob['user']
+
+	@property
+	def user(self) -> str:
+		"""The username of the user who wrote this change."""
+		return self.__user
+
+
+class SwitchChange(Change):
+	"""
+	A change made to a switch (not one of its interfaces), detected by
+	the poller (not made via swarm).
+	"""
+	def __init__(self, client, path, blob):
+		Change.__init__(self, client, path, blob)
+
+class SwitchWriteChange(SwitchChange):
+	"""
+	A change made to a switch (not one of its interfaces) via swarm.
+	"""
+	def __init__(self, client, path, blob):
+		SwitchChange.__init__(self, client, path, blob)
+		self.__user = blob['user']
+
+	@property
+	def user(self) -> str:
+		"""The username of the user who wrote this change."""
+		return self.__user
+
 class Interface(object):
 	"""
 	An interface object in swarm, representing one specific interface on
@@ -262,6 +365,45 @@ class Interface(object):
 			neis.append(CDPNeighbour(self.__client, self, n['time'],
 			    n['remote_name'], n['remote_intf']))
 		return neis
+
+	@property
+	def history(self) -> List[Change]:
+		"""
+		Retrieves a list of all changes that have affected this
+		interface.
+		"""
+		changes = []
+		r = self.__client._get('/interfaces/' + self.__path + '/' + \
+		    str(self.__index) + '/history?interface_only=true')
+		if r.status_code == 200:
+			for m in r.json()['logs']:
+				c = Change.from_blob(self.__client,
+				    self.__path, m)
+				changes.append(c)
+		else:
+			raise APIException(r.status_code, r.text)
+		return changes
+
+	def history_since(self, ts: datetime.datetime) -> List[Change]:
+		"""
+		Retrieves a list of all changes that have affected this
+		interface after a particular timestamp.
+		"""
+		since = int(ts.timestamp())
+		changes = []
+		r = self.__client._get('/interfaces/' + self.__path + '/' + \
+		    str(self.__index) + '/history?interface_only=true' +
+		    '&since=' + str(since))
+		if r.status_code == 200:
+			logs = r.json()['logs']
+			for m in r.json()['logs']:
+				c = Change.from_blob(self.__client,
+				    self.__path, m)
+				changes.append(c)
+		else:
+			raise APIException(r.status_code, r.text)
+		return changes
+
 
 class Switch(object):
 	"""
@@ -457,6 +599,23 @@ class Switch(object):
 		Retrives a specific interface by its index number.
 		"""
 		return self.__client.interface(self.__path, index)
+
+	@property
+	def history(self) -> List[Change]:
+		"""
+		Retrieves a list of all changes that have affected this
+		switch.
+		"""
+		changes = []
+		r = self.__client._get('/switches/' + self.__path + '/history')
+		if r.status_code == 200:
+			for m in r.json()['logs']:
+				c = Change.from_blob(self.__client,
+				    self.__path, m)
+				changes.append(c)
+		else:
+			raise APIException(r.status_code, r.text)
+		return changes
 
 class VLAN(TypedDict):
 	"""
