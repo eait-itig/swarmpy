@@ -158,6 +158,109 @@ class CDPNeighbour(Neighbour):
                 &#34;&#34;&#34;
                 return self.__rintf
 
+class Change(object):
+        &#34;&#34;&#34;
+        Represents a change made to a switch or switch interface.
+        &#34;&#34;&#34;
+        def __init__(self, client: Client, path: str, blob: dict):
+                self.__client = client
+                self.__stamp = blob[&#39;time&#39;]
+                self.__type = blob[&#39;type&#39;]
+                self.__changes = blob[&#39;changes&#39;]
+                self.__path = path
+
+        @property
+        def switch(self) -&gt; Switch:
+                &#34;&#34;&#34;
+                The switch which had this change made to it (or recorded it).
+                &#34;&#34;&#34;
+                return self.__client.switch(self.__path)
+
+        @property
+        def changes(self) -&gt; dict:
+                &#34;&#34;&#34;
+                The dictionary of attributes which changed.
+                &#34;&#34;&#34;
+                return self.__changes
+
+        @property
+        def time(self) -&gt; datetime:
+                &#34;&#34;&#34;
+                Time at which the change was made or noticed.
+                &#34;&#34;&#34;
+                return datetime.fromtimestamp(self.__stamp)
+        @property
+        def raw_time(self) -&gt; int:
+                &#34;&#34;&#34;
+                Time at which the change was made or noticed, as a raw number
+                of seconds since the UNIX epoch.
+                &#34;&#34;&#34;
+                return self.__stamp
+
+        @staticmethod
+        def from_blob(client: Client, path: str, blob: dict):
+                if blob[&#39;type&#39;] == &#39;interface&#39;:
+                        return InterfaceChange(client, path, blob)
+                elif blob[&#39;type&#39;] == &#39;switch&#39;:
+                        return SwitchChange(client, path, blob)
+                elif blob[&#39;type&#39;] == &#39;interface_write&#39;:
+                        return InterfaceWriteChange(client, path, blob)
+                elif blob[&#39;type&#39;] == &#39;switch_write&#39;:
+                        return SwitchWriteChange(client, path, blob)
+                else:
+                        raise Exception(&#39;Unsupported change type: &#39; +
+                            blob[&#39;type&#39;])
+
+class InterfaceChange(Change):
+        &#34;&#34;&#34;
+        A change made to a switch interface which was detected by the poller
+        (not made via swarm)
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                Change.__init__(self, client, path, blob)
+                self.__index = blob[&#39;index&#39;]
+
+        @property
+        def interface(self) -&gt; Interface:
+                &#34;&#34;&#34;The interface affected by this change.&#34;&#34;&#34;
+                return self.switch.interface(self.__index)
+
+
+class InterfaceWriteChange(InterfaceChange):
+        &#34;&#34;&#34;
+        A change made to a switch interface via swarm.
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                InterfaceChange.__init__(self, client, path, blob)
+                self.__user = blob[&#39;user&#39;]
+
+        @property
+        def user(self) -&gt; str:
+                &#34;&#34;&#34;The username of the user who wrote this change.&#34;&#34;&#34;
+                return self.__user
+
+
+class SwitchChange(Change):
+        &#34;&#34;&#34;
+        A change made to a switch (not one of its interfaces), detected by
+        the poller (not made via swarm).
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                Change.__init__(self, client, path, blob)
+
+class SwitchWriteChange(SwitchChange):
+        &#34;&#34;&#34;
+        A change made to a switch (not one of its interfaces) via swarm.
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                SwitchChange.__init__(self, client, path, blob)
+                self.__user = blob[&#39;user&#39;]
+
+        @property
+        def user(self) -&gt; str:
+                &#34;&#34;&#34;The username of the user who wrote this change.&#34;&#34;&#34;
+                return self.__user
+
 class Interface(object):
         &#34;&#34;&#34;
         An interface object in swarm, representing one specific interface on
@@ -286,6 +389,45 @@ class Interface(object):
                         neis.append(CDPNeighbour(self.__client, self, n[&#39;time&#39;],
                             n[&#39;remote_name&#39;], n[&#39;remote_intf&#39;]))
                 return neis
+
+        @property
+        def history(self) -&gt; List[Change]:
+                &#34;&#34;&#34;
+                Retrieves a list of all changes that have affected this
+                interface.
+                &#34;&#34;&#34;
+                changes = []
+                r = self.__client._get(&#39;/interfaces/&#39; + self.__path + &#39;/&#39; + \
+                    str(self.__index) + &#39;/history?interface_only=true&#39;)
+                if r.status_code == 200:
+                        for m in r.json()[&#39;logs&#39;]:
+                                c = Change.from_blob(self.__client,
+                                    self.__path, m)
+                                changes.append(c)
+                else:
+                        raise APIException(r.status_code, r.text)
+                return changes
+
+        def history_since(self, ts: datetime.datetime) -&gt; List[Change]:
+                &#34;&#34;&#34;
+                Retrieves a list of all changes that have affected this
+                interface after a particular timestamp.
+                &#34;&#34;&#34;
+                since = int(ts.timestamp())
+                changes = []
+                r = self.__client._get(&#39;/interfaces/&#39; + self.__path + &#39;/&#39; + \
+                    str(self.__index) + &#39;/history?interface_only=true&#39; +
+                    &#39;&amp;since=&#39; + str(since))
+                if r.status_code == 200:
+                        logs = r.json()[&#39;logs&#39;]
+                        for m in r.json()[&#39;logs&#39;]:
+                                c = Change.from_blob(self.__client,
+                                    self.__path, m)
+                                changes.append(c)
+                else:
+                        raise APIException(r.status_code, r.text)
+                return changes
+
 
 class Switch(object):
         &#34;&#34;&#34;
@@ -481,6 +623,23 @@ class Switch(object):
                 Retrives a specific interface by its index number.
                 &#34;&#34;&#34;
                 return self.__client.interface(self.__path, index)
+
+        @property
+        def history(self) -&gt; List[Change]:
+                &#34;&#34;&#34;
+                Retrieves a list of all changes that have affected this
+                switch.
+                &#34;&#34;&#34;
+                changes = []
+                r = self.__client._get(&#39;/switches/&#39; + self.__path + &#39;/history&#39;)
+                if r.status_code == 200:
+                        for m in r.json()[&#39;logs&#39;]:
+                                c = Change.from_blob(self.__client,
+                                    self.__path, m)
+                                changes.append(c)
+                else:
+                        raise APIException(r.status_code, r.text)
+                return changes
 
 class VLAN(TypedDict):
         &#34;&#34;&#34;
@@ -721,6 +880,167 @@ def remote_name(self) -&gt; str:
 </ul>
 </li>
 </ul>
+</dd>
+<dt id="swarm.objects.Change"><code class="flex name class">
+<span>class <span class="ident">Change</span></span>
+<span>(</span><span>client: Client, path: str, blob: dict)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Represents a change made to a switch or switch interface.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class Change(object):
+        &#34;&#34;&#34;
+        Represents a change made to a switch or switch interface.
+        &#34;&#34;&#34;
+        def __init__(self, client: Client, path: str, blob: dict):
+                self.__client = client
+                self.__stamp = blob[&#39;time&#39;]
+                self.__type = blob[&#39;type&#39;]
+                self.__changes = blob[&#39;changes&#39;]
+                self.__path = path
+
+        @property
+        def switch(self) -&gt; Switch:
+                &#34;&#34;&#34;
+                The switch which had this change made to it (or recorded it).
+                &#34;&#34;&#34;
+                return self.__client.switch(self.__path)
+
+        @property
+        def changes(self) -&gt; dict:
+                &#34;&#34;&#34;
+                The dictionary of attributes which changed.
+                &#34;&#34;&#34;
+                return self.__changes
+
+        @property
+        def time(self) -&gt; datetime:
+                &#34;&#34;&#34;
+                Time at which the change was made or noticed.
+                &#34;&#34;&#34;
+                return datetime.fromtimestamp(self.__stamp)
+        @property
+        def raw_time(self) -&gt; int:
+                &#34;&#34;&#34;
+                Time at which the change was made or noticed, as a raw number
+                of seconds since the UNIX epoch.
+                &#34;&#34;&#34;
+                return self.__stamp
+
+        @staticmethod
+        def from_blob(client: Client, path: str, blob: dict):
+                if blob[&#39;type&#39;] == &#39;interface&#39;:
+                        return InterfaceChange(client, path, blob)
+                elif blob[&#39;type&#39;] == &#39;switch&#39;:
+                        return SwitchChange(client, path, blob)
+                elif blob[&#39;type&#39;] == &#39;interface_write&#39;:
+                        return InterfaceWriteChange(client, path, blob)
+                elif blob[&#39;type&#39;] == &#39;switch_write&#39;:
+                        return SwitchWriteChange(client, path, blob)
+                else:
+                        raise Exception(&#39;Unsupported change type: &#39; +
+                            blob[&#39;type&#39;])</code></pre>
+</details>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.InterfaceChange" href="#swarm.objects.InterfaceChange">InterfaceChange</a></li>
+<li><a title="swarm.objects.SwitchChange" href="#swarm.objects.SwitchChange">SwitchChange</a></li>
+</ul>
+<h3>Static methods</h3>
+<dl>
+<dt id="swarm.objects.Change.from_blob"><code class="name flex">
+<span>def <span class="ident">from_blob</span></span>(<span>client: Client, path: str, blob: dict)</span>
+</code></dt>
+<dd>
+<div class="desc"></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@staticmethod
+def from_blob(client: Client, path: str, blob: dict):
+        if blob[&#39;type&#39;] == &#39;interface&#39;:
+                return InterfaceChange(client, path, blob)
+        elif blob[&#39;type&#39;] == &#39;switch&#39;:
+                return SwitchChange(client, path, blob)
+        elif blob[&#39;type&#39;] == &#39;interface_write&#39;:
+                return InterfaceWriteChange(client, path, blob)
+        elif blob[&#39;type&#39;] == &#39;switch_write&#39;:
+                return SwitchWriteChange(client, path, blob)
+        else:
+                raise Exception(&#39;Unsupported change type: &#39; +
+                    blob[&#39;type&#39;])</code></pre>
+</details>
+</dd>
+</dl>
+<h3>Instance variables</h3>
+<dl>
+<dt id="swarm.objects.Change.changes"><code class="name">var <span class="ident">changes</span> : dict</code></dt>
+<dd>
+<div class="desc"><p>The dictionary of attributes which changed.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def changes(self) -&gt; dict:
+        &#34;&#34;&#34;
+        The dictionary of attributes which changed.
+        &#34;&#34;&#34;
+        return self.__changes</code></pre>
+</details>
+</dd>
+<dt id="swarm.objects.Change.raw_time"><code class="name">var <span class="ident">raw_time</span> : int</code></dt>
+<dd>
+<div class="desc"><p>Time at which the change was made or noticed, as a raw number
+of seconds since the UNIX epoch.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def raw_time(self) -&gt; int:
+        &#34;&#34;&#34;
+        Time at which the change was made or noticed, as a raw number
+        of seconds since the UNIX epoch.
+        &#34;&#34;&#34;
+        return self.__stamp</code></pre>
+</details>
+</dd>
+<dt id="swarm.objects.Change.switch"><code class="name">var <span class="ident">switch</span> : <a title="swarm.objects.Switch" href="#swarm.objects.Switch">Switch</a></code></dt>
+<dd>
+<div class="desc"><p>The switch which had this change made to it (or recorded it).</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def switch(self) -&gt; Switch:
+        &#34;&#34;&#34;
+        The switch which had this change made to it (or recorded it).
+        &#34;&#34;&#34;
+        return self.__client.switch(self.__path)</code></pre>
+</details>
+</dd>
+<dt id="swarm.objects.Change.time"><code class="name">var <span class="ident">time</span> : datetime.datetime</code></dt>
+<dd>
+<div class="desc"><p>Time at which the change was made or noticed.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def time(self) -&gt; datetime:
+        &#34;&#34;&#34;
+        Time at which the change was made or noticed.
+        &#34;&#34;&#34;
+        return datetime.fromtimestamp(self.__stamp)</code></pre>
+</details>
+</dd>
+</dl>
 </dd>
 <dt id="swarm.objects.Container"><code class="flex name class">
 <span>class <span class="ident">Container</span></span>
@@ -1172,7 +1492,45 @@ a network switch.</p></div>
                 for n in self.__blob[&#39;neighbours&#39;]:
                         neis.append(CDPNeighbour(self.__client, self, n[&#39;time&#39;],
                             n[&#39;remote_name&#39;], n[&#39;remote_intf&#39;]))
-                return neis</code></pre>
+                return neis
+
+        @property
+        def history(self) -&gt; List[Change]:
+                &#34;&#34;&#34;
+                Retrieves a list of all changes that have affected this
+                interface.
+                &#34;&#34;&#34;
+                changes = []
+                r = self.__client._get(&#39;/interfaces/&#39; + self.__path + &#39;/&#39; + \
+                    str(self.__index) + &#39;/history?interface_only=true&#39;)
+                if r.status_code == 200:
+                        for m in r.json()[&#39;logs&#39;]:
+                                c = Change.from_blob(self.__client,
+                                    self.__path, m)
+                                changes.append(c)
+                else:
+                        raise APIException(r.status_code, r.text)
+                return changes
+
+        def history_since(self, ts: datetime.datetime) -&gt; List[Change]:
+                &#34;&#34;&#34;
+                Retrieves a list of all changes that have affected this
+                interface after a particular timestamp.
+                &#34;&#34;&#34;
+                since = int(ts.timestamp())
+                changes = []
+                r = self.__client._get(&#39;/interfaces/&#39; + self.__path + &#39;/&#39; + \
+                    str(self.__index) + &#39;/history?interface_only=true&#39; +
+                    &#39;&amp;since=&#39; + str(since))
+                if r.status_code == 200:
+                        logs = r.json()[&#39;logs&#39;]
+                        for m in r.json()[&#39;logs&#39;]:
+                                c = Change.from_blob(self.__client,
+                                    self.__path, m)
+                                changes.append(c)
+                else:
+                        raise APIException(r.status_code, r.text)
+                return changes</code></pre>
 </details>
 <h3>Instance variables</h3>
 <dl>
@@ -1184,6 +1542,33 @@ a network switch.</p></div>
 <dd>
 <div class="desc"><p>The "alias" of this interface (user-defined name, set with <code>description</code>
 in Cisco configuration).</p></div>
+</dd>
+<dt id="swarm.objects.Interface.history"><code class="name">var <span class="ident">history</span> : List[<a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a>]</code></dt>
+<dd>
+<div class="desc"><p>Retrieves a list of all changes that have affected this
+interface.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def history(self) -&gt; List[Change]:
+        &#34;&#34;&#34;
+        Retrieves a list of all changes that have affected this
+        interface.
+        &#34;&#34;&#34;
+        changes = []
+        r = self.__client._get(&#39;/interfaces/&#39; + self.__path + &#39;/&#39; + \
+            str(self.__index) + &#39;/history?interface_only=true&#39;)
+        if r.status_code == 200:
+                for m in r.json()[&#39;logs&#39;]:
+                        c = Change.from_blob(self.__client,
+                            self.__path, m)
+                        changes.append(c)
+        else:
+                raise APIException(r.status_code, r.text)
+        return changes</code></pre>
+</details>
 </dd>
 <dt id="swarm.objects.Interface.index"><code class="name">var <span class="ident">index</span> : int</code></dt>
 <dd>
@@ -1289,6 +1674,158 @@ def switch(self) -&gt; Switch:
 <div class="desc"><p>The voice VLAN of this interface.</p></div>
 </dd>
 </dl>
+<h3>Methods</h3>
+<dl>
+<dt id="swarm.objects.Interface.history_since"><code class="name flex">
+<span>def <span class="ident">history_since</span></span>(<span>self, ts: datetime.datetime) ‑> List[<a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a>]</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Retrieves a list of all changes that have affected this
+interface after a particular timestamp.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def history_since(self, ts: datetime.datetime) -&gt; List[Change]:
+        &#34;&#34;&#34;
+        Retrieves a list of all changes that have affected this
+        interface after a particular timestamp.
+        &#34;&#34;&#34;
+        since = int(ts.timestamp())
+        changes = []
+        r = self.__client._get(&#39;/interfaces/&#39; + self.__path + &#39;/&#39; + \
+            str(self.__index) + &#39;/history?interface_only=true&#39; +
+            &#39;&amp;since=&#39; + str(since))
+        if r.status_code == 200:
+                logs = r.json()[&#39;logs&#39;]
+                for m in r.json()[&#39;logs&#39;]:
+                        c = Change.from_blob(self.__client,
+                            self.__path, m)
+                        changes.append(c)
+        else:
+                raise APIException(r.status_code, r.text)
+        return changes</code></pre>
+</details>
+</dd>
+</dl>
+</dd>
+<dt id="swarm.objects.InterfaceChange"><code class="flex name class">
+<span>class <span class="ident">InterfaceChange</span></span>
+<span>(</span><span>client, path, blob)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>A change made to a switch interface which was detected by the poller
+(not made via swarm)</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class InterfaceChange(Change):
+        &#34;&#34;&#34;
+        A change made to a switch interface which was detected by the poller
+        (not made via swarm)
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                Change.__init__(self, client, path, blob)
+                self.__index = blob[&#39;index&#39;]
+
+        @property
+        def interface(self) -&gt; Interface:
+                &#34;&#34;&#34;The interface affected by this change.&#34;&#34;&#34;
+                return self.switch.interface(self.__index)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.InterfaceWriteChange" href="#swarm.objects.InterfaceWriteChange">InterfaceWriteChange</a></li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="swarm.objects.InterfaceChange.interface"><code class="name">var <span class="ident">interface</span> : <a title="swarm.objects.Interface" href="#swarm.objects.Interface">Interface</a></code></dt>
+<dd>
+<div class="desc"><p>The interface affected by this change.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def interface(self) -&gt; Interface:
+        &#34;&#34;&#34;The interface affected by this change.&#34;&#34;&#34;
+        return self.switch.interface(self.__index)</code></pre>
+</details>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></b></code>:
+<ul class="hlist">
+<li><code><a title="swarm.objects.Change.changes" href="#swarm.objects.Change.changes">changes</a></code></li>
+<li><code><a title="swarm.objects.Change.raw_time" href="#swarm.objects.Change.raw_time">raw_time</a></code></li>
+<li><code><a title="swarm.objects.Change.switch" href="#swarm.objects.Change.switch">switch</a></code></li>
+<li><code><a title="swarm.objects.Change.time" href="#swarm.objects.Change.time">time</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt id="swarm.objects.InterfaceWriteChange"><code class="flex name class">
+<span>class <span class="ident">InterfaceWriteChange</span></span>
+<span>(</span><span>client, path, blob)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>A change made to a switch interface via swarm.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class InterfaceWriteChange(InterfaceChange):
+        &#34;&#34;&#34;
+        A change made to a switch interface via swarm.
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                InterfaceChange.__init__(self, client, path, blob)
+                self.__user = blob[&#39;user&#39;]
+
+        @property
+        def user(self) -&gt; str:
+                &#34;&#34;&#34;The username of the user who wrote this change.&#34;&#34;&#34;
+                return self.__user</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.InterfaceChange" href="#swarm.objects.InterfaceChange">InterfaceChange</a></li>
+<li><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="swarm.objects.InterfaceWriteChange.user"><code class="name">var <span class="ident">user</span> : str</code></dt>
+<dd>
+<div class="desc"><p>The username of the user who wrote this change.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def user(self) -&gt; str:
+        &#34;&#34;&#34;The username of the user who wrote this change.&#34;&#34;&#34;
+        return self.__user</code></pre>
+</details>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="swarm.objects.InterfaceChange" href="#swarm.objects.InterfaceChange">InterfaceChange</a></b></code>:
+<ul class="hlist">
+<li><code><a title="swarm.objects.InterfaceChange.changes" href="#swarm.objects.Change.changes">changes</a></code></li>
+<li><code><a title="swarm.objects.InterfaceChange.interface" href="#swarm.objects.InterfaceChange.interface">interface</a></code></li>
+<li><code><a title="swarm.objects.InterfaceChange.raw_time" href="#swarm.objects.Change.raw_time">raw_time</a></code></li>
+<li><code><a title="swarm.objects.InterfaceChange.switch" href="#swarm.objects.Change.switch">switch</a></code></li>
+<li><code><a title="swarm.objects.InterfaceChange.time" href="#swarm.objects.Change.time">time</a></code></li>
+</ul>
+</li>
+</ul>
 </dd>
 <dt id="swarm.objects.MACNeighbour"><code class="flex name class">
 <span>class <span class="ident">MACNeighbour</span></span>
@@ -1685,7 +2222,24 @@ interfaces.</p></div>
                 &#34;&#34;&#34;
                 Retrives a specific interface by its index number.
                 &#34;&#34;&#34;
-                return self.__client.interface(self.__path, index)</code></pre>
+                return self.__client.interface(self.__path, index)
+
+        @property
+        def history(self) -&gt; List[Change]:
+                &#34;&#34;&#34;
+                Retrieves a list of all changes that have affected this
+                switch.
+                &#34;&#34;&#34;
+                changes = []
+                r = self.__client._get(&#39;/switches/&#39; + self.__path + &#39;/history&#39;)
+                if r.status_code == 200:
+                        for m in r.json()[&#39;logs&#39;]:
+                                c = Change.from_blob(self.__client,
+                                    self.__path, m)
+                                changes.append(c)
+                else:
+                        raise APIException(r.status_code, r.text)
+                return changes</code></pre>
 </details>
 <h3>Instance variables</h3>
 <dl>
@@ -1701,6 +2255,32 @@ the output of <code>show version</code>).</p></div>
 <dt id="swarm.objects.Switch.display_name"><code class="name">var <span class="ident">display_name</span> : str</code></dt>
 <dd>
 <div class="desc"><p>The friendly 'display name' for the container.</p></div>
+</dd>
+<dt id="swarm.objects.Switch.history"><code class="name">var <span class="ident">history</span> : List[<a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a>]</code></dt>
+<dd>
+<div class="desc"><p>Retrieves a list of all changes that have affected this
+switch.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def history(self) -&gt; List[Change]:
+        &#34;&#34;&#34;
+        Retrieves a list of all changes that have affected this
+        switch.
+        &#34;&#34;&#34;
+        changes = []
+        r = self.__client._get(&#39;/switches/&#39; + self.__path + &#39;/history&#39;)
+        if r.status_code == 200:
+                for m in r.json()[&#39;logs&#39;]:
+                        c = Change.from_blob(self.__client,
+                            self.__path, m)
+                        changes.append(c)
+        else:
+                raise APIException(r.status_code, r.text)
+        return changes</code></pre>
+</details>
 </dd>
 <dt id="swarm.objects.Switch.hostname"><code class="name">var <span class="ident">hostname</span> : str</code></dt>
 <dd>
@@ -1901,6 +2481,101 @@ configuration properties (<code>display_name</code>, <code>hostname</code>, etc)
 </dd>
 </dl>
 </dd>
+<dt id="swarm.objects.SwitchChange"><code class="flex name class">
+<span>class <span class="ident">SwitchChange</span></span>
+<span>(</span><span>client, path, blob)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>A change made to a switch (not one of its interfaces), detected by
+the poller (not made via swarm).</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SwitchChange(Change):
+        &#34;&#34;&#34;
+        A change made to a switch (not one of its interfaces), detected by
+        the poller (not made via swarm).
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                Change.__init__(self, client, path, blob)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.SwitchWriteChange" href="#swarm.objects.SwitchWriteChange">SwitchWriteChange</a></li>
+</ul>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></b></code>:
+<ul class="hlist">
+<li><code><a title="swarm.objects.Change.changes" href="#swarm.objects.Change.changes">changes</a></code></li>
+<li><code><a title="swarm.objects.Change.raw_time" href="#swarm.objects.Change.raw_time">raw_time</a></code></li>
+<li><code><a title="swarm.objects.Change.switch" href="#swarm.objects.Change.switch">switch</a></code></li>
+<li><code><a title="swarm.objects.Change.time" href="#swarm.objects.Change.time">time</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt id="swarm.objects.SwitchWriteChange"><code class="flex name class">
+<span>class <span class="ident">SwitchWriteChange</span></span>
+<span>(</span><span>client, path, blob)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>A change made to a switch (not one of its interfaces) via swarm.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class SwitchWriteChange(SwitchChange):
+        &#34;&#34;&#34;
+        A change made to a switch (not one of its interfaces) via swarm.
+        &#34;&#34;&#34;
+        def __init__(self, client, path, blob):
+                SwitchChange.__init__(self, client, path, blob)
+                self.__user = blob[&#39;user&#39;]
+
+        @property
+        def user(self) -&gt; str:
+                &#34;&#34;&#34;The username of the user who wrote this change.&#34;&#34;&#34;
+                return self.__user</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="swarm.objects.SwitchChange" href="#swarm.objects.SwitchChange">SwitchChange</a></li>
+<li><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></li>
+</ul>
+<h3>Instance variables</h3>
+<dl>
+<dt id="swarm.objects.SwitchWriteChange.user"><code class="name">var <span class="ident">user</span> : str</code></dt>
+<dd>
+<div class="desc"><p>The username of the user who wrote this change.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@property
+def user(self) -&gt; str:
+        &#34;&#34;&#34;The username of the user who wrote this change.&#34;&#34;&#34;
+        return self.__user</code></pre>
+</details>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="swarm.objects.SwitchChange" href="#swarm.objects.SwitchChange">SwitchChange</a></b></code>:
+<ul class="hlist">
+<li><code><a title="swarm.objects.SwitchChange.changes" href="#swarm.objects.Change.changes">changes</a></code></li>
+<li><code><a title="swarm.objects.SwitchChange.raw_time" href="#swarm.objects.Change.raw_time">raw_time</a></code></li>
+<li><code><a title="swarm.objects.SwitchChange.switch" href="#swarm.objects.Change.switch">switch</a></code></li>
+<li><code><a title="swarm.objects.SwitchChange.time" href="#swarm.objects.Change.time">time</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
 <dt id="swarm.objects.VLAN"><code class="flex name class">
 <span>class <span class="ident">VLAN</span></span>
 <span>(</span><span>*args, **kwargs)</span>
@@ -1958,6 +2633,16 @@ configuration properties (<code>display_name</code>, <code>hostname</code>, etc)
 </ul>
 </li>
 <li>
+<h4><code><a title="swarm.objects.Change" href="#swarm.objects.Change">Change</a></code></h4>
+<ul class="">
+<li><code><a title="swarm.objects.Change.changes" href="#swarm.objects.Change.changes">changes</a></code></li>
+<li><code><a title="swarm.objects.Change.from_blob" href="#swarm.objects.Change.from_blob">from_blob</a></code></li>
+<li><code><a title="swarm.objects.Change.raw_time" href="#swarm.objects.Change.raw_time">raw_time</a></code></li>
+<li><code><a title="swarm.objects.Change.switch" href="#swarm.objects.Change.switch">switch</a></code></li>
+<li><code><a title="swarm.objects.Change.time" href="#swarm.objects.Change.time">time</a></code></li>
+</ul>
+</li>
+<li>
 <h4><code><a title="swarm.objects.Container" href="#swarm.objects.Container">Container</a></code></h4>
 <ul class="two-column">
 <li><code><a title="swarm.objects.Container.acl" href="#swarm.objects.Container.acl">acl</a></code></li>
@@ -1977,6 +2662,8 @@ configuration properties (<code>display_name</code>, <code>hostname</code>, etc)
 <ul class="two-column">
 <li><code><a title="swarm.objects.Interface.admin_status" href="#swarm.objects.Interface.admin_status">admin_status</a></code></li>
 <li><code><a title="swarm.objects.Interface.alias" href="#swarm.objects.Interface.alias">alias</a></code></li>
+<li><code><a title="swarm.objects.Interface.history" href="#swarm.objects.Interface.history">history</a></code></li>
+<li><code><a title="swarm.objects.Interface.history_since" href="#swarm.objects.Interface.history_since">history_since</a></code></li>
 <li><code><a title="swarm.objects.Interface.index" href="#swarm.objects.Interface.index">index</a></code></li>
 <li><code><a title="swarm.objects.Interface.long_name" href="#swarm.objects.Interface.long_name">long_name</a></code></li>
 <li><code><a title="swarm.objects.Interface.name" href="#swarm.objects.Interface.name">name</a></code></li>
@@ -1988,6 +2675,18 @@ configuration properties (<code>display_name</code>, <code>hostname</code>, etc)
 <li><code><a title="swarm.objects.Interface.trunk" href="#swarm.objects.Interface.trunk">trunk</a></code></li>
 <li><code><a title="swarm.objects.Interface.vlan" href="#swarm.objects.Interface.vlan">vlan</a></code></li>
 <li><code><a title="swarm.objects.Interface.voice_vlan" href="#swarm.objects.Interface.voice_vlan">voice_vlan</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="swarm.objects.InterfaceChange" href="#swarm.objects.InterfaceChange">InterfaceChange</a></code></h4>
+<ul class="">
+<li><code><a title="swarm.objects.InterfaceChange.interface" href="#swarm.objects.InterfaceChange.interface">interface</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="swarm.objects.InterfaceWriteChange" href="#swarm.objects.InterfaceWriteChange">InterfaceWriteChange</a></code></h4>
+<ul class="">
+<li><code><a title="swarm.objects.InterfaceWriteChange.user" href="#swarm.objects.InterfaceWriteChange.user">user</a></code></li>
 </ul>
 </li>
 <li>
@@ -2012,6 +2711,7 @@ configuration properties (<code>display_name</code>, <code>hostname</code>, etc)
 <li><code><a title="swarm.objects.Switch.delete" href="#swarm.objects.Switch.delete">delete</a></code></li>
 <li><code><a title="swarm.objects.Switch.description" href="#swarm.objects.Switch.description">description</a></code></li>
 <li><code><a title="swarm.objects.Switch.display_name" href="#swarm.objects.Switch.display_name">display_name</a></code></li>
+<li><code><a title="swarm.objects.Switch.history" href="#swarm.objects.Switch.history">history</a></code></li>
 <li><code><a title="swarm.objects.Switch.hostname" href="#swarm.objects.Switch.hostname">hostname</a></code></li>
 <li><code><a title="swarm.objects.Switch.interface" href="#swarm.objects.Switch.interface">interface</a></code></li>
 <li><code><a title="swarm.objects.Switch.interfaces" href="#swarm.objects.Switch.interfaces">interfaces</a></code></li>
@@ -2025,6 +2725,15 @@ configuration properties (<code>display_name</code>, <code>hostname</code>, etc)
 <li><code><a title="swarm.objects.Switch.sysname" href="#swarm.objects.Switch.sysname">sysname</a></code></li>
 <li><code><a title="swarm.objects.Switch.uptime" href="#swarm.objects.Switch.uptime">uptime</a></code></li>
 <li><code><a title="swarm.objects.Switch.vlans" href="#swarm.objects.Switch.vlans">vlans</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="swarm.objects.SwitchChange" href="#swarm.objects.SwitchChange">SwitchChange</a></code></h4>
+</li>
+<li>
+<h4><code><a title="swarm.objects.SwitchWriteChange" href="#swarm.objects.SwitchWriteChange">SwitchWriteChange</a></code></h4>
+<ul class="">
+<li><code><a title="swarm.objects.SwitchWriteChange.user" href="#swarm.objects.SwitchWriteChange.user">user</a></code></li>
 </ul>
 </li>
 <li>
