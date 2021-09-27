@@ -215,6 +215,15 @@ class Client(object):
 		written by calling the `write()` method.
 		"""
 		return (len(self._writespecs) > 0)
+
+	@property
+	def status_summary(self) -> dict[str, int]:
+		"""
+		Retrieves a summary of the polling status of all switches known
+		to swarm.
+		"""
+		d = next(self._ws_request('get_status_summary'))['data']
+		return d['status_summary']
 	
 
 	def write(self, commit : Optional[bool] = True) -> Iterator[WriteProgress]:
